@@ -14,9 +14,9 @@ type Theme = { bg: string; panel: string; ink: string; line: string; accent: str
 type Brief = {
   location: Location;
   nearAbino: boolean;
-  current: { temperature: number; feels: number; humidity: number; precipitation: number; condition: string; wind: number; gust: number; direction: number | null; compass: string; cloud: number } | null;
+  current: { temperature: number; feels: number; humidity: number; precipitation: number; condition: string; wind: number; gust: number; direction: number | null; compass: string; cloud: number; visibility: number | null; uv: number | null } | null;
   marine: { height: number | null; period: number | null; compass: string; direction: number | null; waterTemperature: number | null; alignment: string } | null;
-  nextHours: Array<{ time: string; temperature: number; rain: number; wind: number; gust: number; compass: string; direction: number | null; condition: string; wave: number | null; period: number | null; waveDirection: number | null; alignment: string }>;
+  nextHours: Array<{ time: string; temperature: number; rain: number; wind: number; gust: number; compass: string; direction: number | null; condition: string; visibility: number | null; uv: number | null; wave: number | null; period: number | null; waveDirection: number | null; alignment: string }>;
   daily: { time: string[]; sunrise: string[]; sunset: string[]; precipitation_sum: number[]; wind_speed_10m_max: number[]; wind_gusts_10m_max: number[] } | null;
   alerts: Array<{ headline: string; severity: string }>;
   guidance: { rank: string; detail: string };
@@ -33,10 +33,74 @@ const THEMES: Record<string, Theme> = {
 };
 
 const money = (value: number | null | undefined, suffix = "") => value === null || value === undefined ? "—" : `${Math.round(value * 10) / 10}${suffix}`;
-const hourLabel = (time: string) => new Date(time).toLocaleTimeString(undefined, { hour: "numeric" });
-const dayLabel = (time: string) => new Date(/T/.test(time) ? time : `${time}T12:00:00Z`).toLocaleDateString(undefined, { weekday: "short" });
+
+const DEFAULT_TIMEZONE = "America/New_York";
+const TIMEZONE_LABELS: Record<string, string> = {
+  "America/New_York": "Eastern Time (EST/EDT)",
+  "America/Chicago": "Central Time (CST/CDT)",
+  "America/Denver": "Mountain Time (MST/MDT)",
+  "America/Phoenix": "Arizona (MST)",
+  "America/Los_Angeles": "Pacific Time (PST/PDT)",
+  "America/Anchorage": "Alaska Time",
+  "Pacific/Honolulu": "Hawaii Time",
+  "America/Toronto": "Toronto",
+  "America/Halifax": "Atlantic Time",
+  "America/St_Johns": "Newfoundland Time",
+  "America/Sao_Paulo": "São Paulo",
+  "Europe/London": "London (GMT/BST)",
+  "Europe/Paris": "Paris (CET/CEST)",
+  "Europe/Berlin": "Berlin",
+  "Asia/Tokyo": "Tokyo",
+  "Asia/Shanghai": "Shanghai",
+  "Asia/Kolkata": "India (IST)",
+  "Australia/Sydney": "Sydney",
+  "Pacific/Auckland": "Auckland",
+  UTC: "UTC",
+};
+const COMMON_TIMEZONES = Object.keys(TIMEZONE_LABELS);
+const ALL_TIMEZONES = typeof Intl !== "undefined" && "supportedValuesOf" in Intl
+  ? (Intl as typeof Intl & { supportedValuesOf: (key: string) => string[] }).supportedValuesOf("timeZone")
+  : COMMON_TIMEZONES;
+const TIMEZONE_OPTIONS = [
+  ...COMMON_TIMEZONES.map((id) => ({ id, label: TIMEZONE_LABELS[id] ?? id })),
+  ...ALL_TIMEZONES.filter((id) => !TIMEZONE_LABELS[id]).map((id) => ({ id, label: id.replace(/_/g, " ") })),
+];
+const isValidTimeZone = (value: string) => {
+  try {
+    new Intl.DateTimeFormat(undefined, { timeZone: value }).format(new Date());
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** Parse absolute instants from the API (UTC ISO). Falls back safely for date-only strings. */
+const parseUtc = (time: string) => {
+  if (!time) return new Date(Number.NaN);
+  if (/Z$/i.test(time) || /[+-]\d{2}:\d{2}$/.test(time)) return new Date(time);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(time)) return new Date(`${time}T12:00:00Z`);
+  const match = time.match(/^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2}))?)?/);
+  if (!match) return new Date(time);
+  const [, year, month, day, hour = "0", minute = "0", second = "0"] = match;
+  return new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second)));
+};
+
+const formatInTz = (time: string, timeZone: string, options: Intl.DateTimeFormatOptions) => {
+  const date = parseUtc(time);
+  if (Number.isNaN(date.getTime())) return "—";
+  return new Intl.DateTimeFormat(undefined, { ...options, timeZone }).format(date);
+};
+
+const hourLabel = (time: string, timeZone: string) => formatInTz(time, timeZone, { hour: "numeric" });
+const dayLabel = (time: string, timeZone: string) => formatInTz(/T/.test(time) ? time : `${time}T12:00:00Z`, timeZone, { weekday: "short" });
+const clockInTz = (timeZone: string) => new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit", timeZone }).format(new Date());
+const tzAbbrev = (timeZone: string) => {
+  const part = new Intl.DateTimeFormat(undefined, { timeZone, timeZoneName: "short" })
+    .formatToParts(new Date())
+    .find((item) => item.type === "timeZoneName");
+  return part?.value ?? timeZone;
+};
 const arrowStyle = (degrees: number | null | undefined) => degrees === null || degrees === undefined ? undefined : { transform: `rotate(${degrees}deg)` };
-const browserClock = () => new Date().toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 
 function applyTheme(theme: Theme) {
   const root = document.documentElement;
@@ -57,6 +121,8 @@ export default function Home() {
   const [themeDraft, setThemeDraft] = useState(DEFAULT_THEME);
   const [clock, setClock] = useState("");
   const [unit, setUnit] = useState<"C" | "F">("C");
+  const [timeZone, setTimeZone] = useState(DEFAULT_TIMEZONE);
+  const [timeZoneDraft, setTimeZoneDraft] = useState(DEFAULT_TIMEZONE);
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
@@ -65,35 +131,48 @@ export default function Home() {
       const savedLocation = JSON.parse(localStorage.getItem("waterwind.location.v1") ?? "null") as Location | null;
       const savedTheme = JSON.parse(localStorage.getItem("waterwind.theme.v1") ?? "null") as Theme | null;
       const savedUnit = localStorage.getItem("waterwind.unit.v1");
+      const savedTz = localStorage.getItem("waterwind.timezone.v1");
       if (savedLocation) { setLocation(savedLocation); setLocationDraft(savedLocation); }
       if (savedTheme) { setTheme(savedTheme); setThemeDraft(savedTheme); applyTheme(savedTheme); }
       if (savedUnit === "C" || savedUnit === "F") setUnit(savedUnit);
+      if (savedTz && isValidTimeZone(savedTz)) {
+        setTimeZone(savedTz);
+        setTimeZoneDraft(savedTz);
+      } else {
+        localStorage.setItem("waterwind.timezone.v1", DEFAULT_TIMEZONE);
+      }
     } catch { /* Invalid local preferences fall back to defaults. */ }
-    const updateClock = () => setClock(browserClock());
+  }, []);
+
+  useEffect(() => {
+    if (!mounted) return;
+    const updateClock = () => setClock(clockInTz(timeZone));
     updateClock();
     const timer = window.setInterval(updateClock, 15_000);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [mounted, timeZone]);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    fetch(`/api/brief?lat=${location.lat}&lon=${location.lon}`)
+    fetch(`/api/brief?lat=${location.lat}&lon=${location.lon}&tz=${encodeURIComponent(timeZone)}`)
       .then((response) => response.json())
       .then((data: Brief) => { if (!cancelled) setBrief(data); })
       .catch(() => { if (!cancelled) setBrief({ ...({} as Brief), errors: ["Could not reach the weather service."], nextHours: [], alerts: [], buoys: [] }); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [location]);
+  }, [location, timeZone]);
 
   const saveSettings = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const nextLocation = { ...locationDraft, lat: Number(locationDraft.lat), lon: Number(locationDraft.lon) };
     setLocation(nextLocation);
     setTheme(themeDraft);
+    setTimeZone(timeZoneDraft);
     applyTheme(themeDraft);
     localStorage.setItem("waterwind.location.v1", JSON.stringify(nextLocation));
     localStorage.setItem("waterwind.theme.v1", JSON.stringify(themeDraft));
+    localStorage.setItem("waterwind.timezone.v1", timeZoneDraft);
     setSettingsOpen(false);
   };
   const useDeviceLocation = () => {
@@ -109,6 +188,13 @@ export default function Home() {
   const formatWind = (value: number | null | undefined) => money(value === null || value === undefined ? value : unit === "F" ? value * 0.621371 : value, unit === "F" ? " mph" : " km/h");
   const formatWave = (value: number | null | undefined) => money(value === null || value === undefined ? value : unit === "F" ? value * 3.28084 : value, unit === "F" ? " ft" : " m");
   const formatRain = (value: number | null | undefined) => money(value === null || value === undefined ? value : unit === "F" ? value * 0.0393701 : value, unit === "F" ? " in" : " mm");
+  const formatVisibility = (meters: number | null | undefined) => {
+    if (meters === null || meters === undefined) return "—";
+    if (unit === "F") return `${Math.round(meters * 0.000621371 * 10) / 10} mi`;
+    return `${Math.round(meters / 100) / 10} km`;
+  };
+  const formatUv = (value: number | null | undefined) => value === null || value === undefined ? "—" : `${Math.round(value * 10) / 10}`;
+  const showSkeleton = loading && !brief;
   const guidanceText = brief?.guidance?.rank === "DANGEROUS"
     ? `31+ ${unit === "F" ? "mph" : "km/h"} wind or ${unit === "F" ? "4.9+ ft" : "1.5+ m"} waves. High risk on exposed water; seek shelter immediately.`
     : brief?.guidance?.rank === "DEMANDING"
@@ -119,17 +205,24 @@ export default function Home() {
     setUnit(nextUnit);
     localStorage.setItem("waterwind.unit.v1", nextUnit);
   };
-  const chartData = useMemo(() => (brief?.nextHours ?? []).map((hour) => ({
+  const upcomingHours = useMemo(() => {
+    const cutoff = Date.now() - 30 * 60_000;
+    return (brief?.nextHours ?? [])
+      .filter((hour) => {
+        const stamp = parseUtc(hour.time).getTime();
+        return Number.isFinite(stamp) && stamp >= cutoff;
+      })
+      .slice(0, 12);
+  }, [brief]);
+  const chartData = useMemo(() => upcomingHours.map((hour) => ({
     ...hour,
-    label: hourLabel(hour.time),
+    label: hourLabel(hour.time, timeZone),
     wind: Math.round((unit === "F" ? hour.wind * 0.621371 : hour.wind) * 10) / 10,
     gust: Math.round((unit === "F" ? hour.gust * 0.621371 : hour.gust) * 10) / 10,
     wave: Math.round((unit === "F" ? (hour.wave ?? 0) * 3.28084 : hour.wave ?? 0) * 10) / 10,
     rain: Math.round(hour.rain),
-  })), [brief, unit]);
-  const hourCount = brief?.nextHours?.length ?? 0;
-
-  if (loading && !brief) return <main className="loading">Reading the water…</main>;
+  })), [upcomingHours, unit, timeZone]);
+  const hourCount = upcomingHours.length;
   const current = brief?.current;
   const rank = brief?.guidance?.rank.toLowerCase() ?? "good";
 
@@ -140,20 +233,43 @@ export default function Home() {
           <div>
             <div className="eyebrow">WATERWIND / LIVE MARINE BOARD</div>
             <h1>{location.name}</h1>
-            <div className="location-name">{mounted ? clock : "—"} · {location.lat.toFixed(4)}°, {location.lon.toFixed(4)}°</div>
+            <div className="location-name">{mounted ? `${clock} ${tzAbbrev(timeZone)}` : "—"} · {location.lat.toFixed(4)}°, {location.lon.toFixed(4)}°</div>
           </div>
           <div className="controls">
             <button className="unit-toggle" aria-label={`Switch to degrees ${unit === "C" ? "Fahrenheit" : "Celsius"}`} aria-pressed={unit === "F"} onClick={toggleUnit}><span className={unit === "C" ? "active" : ""}>°C</span><span className={unit === "F" ? "active" : ""}>°F</span></button>
-            <button className="button" onClick={() => { setLocationDraft(location); setThemeDraft(theme); setSettingsOpen(true); }}>Settings</button>
+            <button className="button" onClick={() => { setLocationDraft(location); setThemeDraft(theme); setTimeZoneDraft(timeZone); setSettingsOpen(true); }}>Settings</button>
           </div>
         </header>
 
+        {showSkeleton ? (
+          <div className="skeleton-board" aria-busy="true" aria-live="polite">
+            <div className="hero skeleton-hero">
+              <div className="hero-main"><div className="skel skel-line short" /><div className="skel skel-temp" /><div className="skel skel-line" /></div>
+              <div className="hero-stats">{Array.from({ length: 8 }, (_, index) => <div key={index}><div className="skel skel-line short" /><div className="skel skel-line" /></div>)}</div>
+              <div className="rating"><div className="skel skel-line short" /><div className="skel skel-block" /><div className="skel skel-line" /></div>
+            </div>
+            <section className="section">
+              <div className="section-head"><div className="skel skel-heading" /><div className="skel skel-line short" /></div>
+              <div className="hours">{Array.from({ length: 6 }, (_, index) => <div className="hour" key={index}><div className="skel skel-line short" /><div className="skel skel-block" /><div className="skel skel-line" /><div className="skel skel-line" /></div>)}</div>
+              <div className="chart-box"><div className="skel skel-chart" /></div>
+            </section>
+            <section className="section lower-grid">
+              <div className="panel"><div className="skel skel-heading" /><div className="skel skel-line" /><div className="skel skel-line" /><div className="skel skel-line" /></div>
+              <div className="panel"><div className="skel skel-heading" /><div className="skel skel-line" /><div className="skel skel-line" /></div>
+            </section>
+          </div>
+        ) : (
+          <>
         {brief?.errors?.length ? <div className="error">FEED NOTES: {brief.errors.join(" · ")}</div> : null}
-        <section className="hero" aria-label="Current conditions">
+        <section className={`hero${loading ? " is-refreshing" : ""}`} aria-label="Current conditions">
           <div className="hero-main">
             <div className="label">Now / {current?.condition ?? "Unavailable"}</div>
             <div className="temp">{formatTemp(current?.temperature)}</div>
             <div className="condition">Feels {formatTemp(current?.feels)} · {current?.condition}</div>
+            <div className="compact-pair" aria-label="Visibility and UV">
+              <span><strong>VIS</strong> {formatVisibility(current?.visibility)}</span>
+              <span><strong>UV</strong> {formatUv(current?.uv)}</span>
+            </div>
           </div>
           <div className="hero-stats">
             <div><div className="label">Wind direction</div><div className="stat-value"><span className="direction-arrow" style={arrowStyle(current?.direction)}>↑</span> {formatWind(current?.wind)} <small>{current?.compass}</small></div></div>
@@ -173,11 +289,11 @@ export default function Home() {
         <section className="section">
           <div className="section-head"><h2>Next {hourCount || 12} hours</h2><span className="label">gusts · wave period · alignment · {unit === "F" ? "mph · ft · in" : "km/h · m · mm"}</span></div>
           <div className="hours">
-            {(brief?.nextHours ?? []).map((hour) => <article className="hour" key={hour.time}>
-              <div className="hour-time">{hourLabel(hour.time)}</div>
-              <div className="hour-temp"><span className="direction-arrow" style={arrowStyle(hour.direction)}>↑</span> {formatTemp(hour.temperature)}<small>AIR · GUST {formatWind(hour.gust)}</small></div>
+            {(upcomingHours).map((hour) => <article className="hour" key={hour.time}>
+              <div className="hour-time">{hourLabel(hour.time, timeZone)}</div>
+              <div className="hour-temp"><span className="direction-arrow" style={arrowStyle(hour.direction)}>↑</span> {formatTemp(hour.temperature)}<small>GUST {formatWind(hour.gust)}</small></div>
               <div className="hour-sky">{hour.condition}</div>
-              <div className="hour-meta"><span>WIND {formatWind(hour.wind)} {hour.compass}</span><span>RAIN {money(hour.rain, "%")}</span><span>WAVE {formatWave(hour.wave)} / {money(hour.period, " s")}</span><span className={`alignment ${hour.alignment}`}>{hour.alignment}</span></div>
+              <div className="hour-meta"><span>W {formatWind(hour.wind)} {hour.compass}</span><span>R {money(hour.rain, "%")}</span><span>WV {formatWave(hour.wave)}/{money(hour.period, "s")}</span><span>VIS {formatVisibility(hour.visibility)}</span><span>UV {formatUv(hour.uv)}</span><span className={`alignment ${hour.alignment}`}>{hour.alignment}</span></div>
             </article>)}
           </div>
           {chartData.length ? <div className="chart-box"><div className="chart-title">Safety graph / next {hourCount} hours · wind and gusts</div><ResponsiveContainer width="100%" height={220}><ComposedChart data={chartData} margin={{ top: 12, right: 8, left: -22, bottom: 0 }}><CartesianGrid stroke="var(--line)" opacity={.3} vertical={false} /><XAxis dataKey="label" stroke="var(--muted)" tick={{ fontSize: 10 }} interval="preserveStartEnd" minTickGap={8} /><YAxis yAxisId="wind" stroke="var(--muted)" tick={{ fontSize: 9 }} /><YAxis yAxisId="rain" orientation="right" stroke="var(--signal)" tick={{ fontSize: 9 }} domain={[0, 100]} /><Tooltip contentStyle={{ background: "var(--bg)", border: "2px solid var(--line)", fontSize: 11 }} formatter={(value: number | string, name: string) => {
@@ -189,7 +305,7 @@ export default function Home() {
         </section>
         <section className="section">
           <div className="section-head"><h2>Radar / recent precipitation</h2><span className="label">timelapse · centered on pin</span></div>
-          <RadarMap lat={location.lat} lon={location.lon} label={location.name} unit={unit} />
+          <RadarMap lat={location.lat} lon={location.lon} label={location.name} unit={unit} timeZone={timeZone} />
         </section>
 
         {brief?.alerts?.length ? <section className="section"><div className="panel alerts"><div className="label">Active alerts / local feed</div>{brief.alerts.map((alert, index) => <div className="alert-row" key={`${alert.headline}-${index}`}><span>{alert.headline}</span><span className="label">{alert.severity}</span></div>)}</div></section> : null}
@@ -197,7 +313,7 @@ export default function Home() {
         <section className="section lower-grid">
           <div className="panel"><div className="section-head"><h2>Day ahead</h2><span className="label">model outlook</span></div>
             <div className="daily-head" aria-hidden="true"><span>Day</span><span>Rain</span><span>Wind</span><span>Gust</span></div>
-            {brief?.daily?.time?.map((day, index) => <div className="daily-row" key={day}><strong>{dayLabel(day)}</strong><span>{formatRain(brief.daily?.precipitation_sum[index])}</span><span>{formatWind(brief.daily?.wind_speed_10m_max[index])}</span><span>{formatWind(brief.daily?.wind_gusts_10m_max[index])}</span></div>)}
+            {brief?.daily?.time?.map((day, index) => <div className="daily-row" key={day}><strong>{dayLabel(day, timeZone)}</strong><span>{formatRain(brief.daily?.precipitation_sum[index])}</span><span>{formatWind(brief.daily?.wind_speed_10m_max[index])}</span><span>{formatWind(brief.daily?.wind_gusts_10m_max[index])}</span></div>)}
           </div>
           <div className="panel"><div className="section-head"><h2>{brief?.nearAbino ? "Nearby buoys" : "Marine readout"}</h2><span className="label">{brief?.nearAbino ? "live stations" : "open-meteo"}</span></div>
             {brief?.buoys?.length ? <>
@@ -207,6 +323,8 @@ export default function Home() {
           </div>
         </section>
         <footer className="sourcebar">SOURCES / <a href="https://open-meteo.com/" target="_blank">OPEN-METEO</a> · <a href="https://weather.gc.ca/" target="_blank">ENVIRONMENT CANADA</a> · <a href="https://www.ndbc.noaa.gov/" target="_blank">NDBC</a></footer>
+          </>
+        )}
       </div>
 
       {settingsOpen ? <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setSettingsOpen(false); }}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
@@ -216,7 +334,19 @@ export default function Home() {
           <label className="field"><span className="label">Name</span><input value={locationDraft.name} onChange={(event) => setLocationDraft({ ...locationDraft, name: event.target.value })} /></label>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}><label className="field"><span className="label">Latitude</span><input type="number" step="any" required value={locationDraft.lat} onChange={(event) => setLocationDraft({ ...locationDraft, lat: Number(event.target.value) })} /></label><label className="field"><span className="label">Longitude</span><input type="number" step="any" required value={locationDraft.lon} onChange={(event) => setLocationDraft({ ...locationDraft, lon: Number(event.target.value) })} /></label></div>
           <button type="button" className="button" onClick={useDeviceLocation}>Use device location</button>
-          <div className="label">Color theme / saved on this device</div>
+          <label className="field">
+            <span className="label">Timezone</span>
+            <select value={timeZoneDraft} onChange={(event) => setTimeZoneDraft(event.target.value)}>
+              <optgroup label="Common">
+                {COMMON_TIMEZONES.map((id) => <option value={id} key={`common-${id}`}>{TIMEZONE_LABELS[id]}</option>)}
+              </optgroup>
+              <optgroup label="All timezones">
+                {TIMEZONE_OPTIONS.filter((zone) => !TIMEZONE_LABELS[zone.id]).map((zone) => <option value={zone.id} key={zone.id}>{zone.label}</option>)}
+              </optgroup>
+            </select>
+            <span className="field-hint">Defaults to Eastern (EST/EDT). Preview: {clockInTz(timeZoneDraft)} {tzAbbrev(timeZoneDraft)}</span>
+          </label>
+          <div className="label">Color theme</div>
           <div className="theme-swatches">{Object.entries(THEMES).map(([name, colors]) => <button type="button" className={`swatch ${themeDraft.bg === colors.bg ? "active" : ""}`} style={{ background: colors.bg, color: colors.ink, borderColor: colors.line }} key={name} onClick={() => setThemeDraft(colors)}>{name}</button>)}</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}><label className="field"><span className="label">Background</span><input type="color" value={themeDraft.bg} onChange={(event) => setThemeDraft({ ...themeDraft, bg: event.target.value })} /></label><label className="field"><span className="label">Panel</span><input type="color" value={themeDraft.panel} onChange={(event) => setThemeDraft({ ...themeDraft, panel: event.target.value })} /></label><label className="field"><span className="label">Accent</span><input type="color" value={themeDraft.accent} onChange={(event) => setThemeDraft({ ...themeDraft, accent: event.target.value })} /></label></div>
           <div className="modal-actions"><button type="button" className="button" onClick={() => { setThemeDraft(DEFAULT_THEME); applyTheme(DEFAULT_THEME); }}>Default colors</button><button type="submit" className="button">Save board</button></div>

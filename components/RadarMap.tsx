@@ -10,6 +10,7 @@ type RadarMapProps = {
   lon: number;
   label: string;
   unit: "C" | "F";
+  timeZone: string;
 };
 
 /** Default view: ~20 km diameter at mid-latitudes in the map pane. */
@@ -26,7 +27,7 @@ function formatSpan(km: number, unit: "C" | "F") {
   return `~${rounded} km`;
 }
 
-export default function RadarMap({ lat, lon, label, unit }: RadarMapProps) {
+export default function RadarMap({ lat, lon, label, unit, timeZone }: RadarMapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<import("leaflet").Map | null>(null);
   const radarLayerRef = useRef<import("leaflet").TileLayer | null>(null);
@@ -226,7 +227,7 @@ export default function RadarMap({ lat, lon, label, unit }: RadarMapProps) {
 
   const active = frames[Math.min(frameIndex, Math.max(frames.length - 1, 0))];
   const stamp = active
-    ? new Date(active.time * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+    ? new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit", timeZone }).format(new Date(active.time * 1000))
     : "—";
   const spanLabel = formatSpan(spanKm, unit);
 
