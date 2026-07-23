@@ -52,7 +52,7 @@ h2 { font: 23px/1 "Archivo Black", sans-serif; text-transform: uppercase; letter
 .good .rating-word, .ideal .rating-word { color: var(--good); }
 .direction-arrow { display: inline-block; color: var(--good); font: 22px/1 "Archivo Black", sans-serif; }
 .wave-arrow { color: var(--signal); }
-.hour-temp small { display: block; color: var(--muted); font: 10px "IBM Plex Mono", monospace; letter-spacing: .1em; }
+.hour-temp small { display: block; color: var(--muted); font: 10px "IBM Plex Mono", monospace; letter-spacing: .08em; margin-top: 4px; }
 .alignment { text-transform: uppercase; color: var(--muted); font-size: 10px; }
 .alignment.opposing { color: var(--signal); font-weight: 600; }
 .alignment.crossing { color: #e0b735; font-weight: 600; }

@@ -33,9 +33,10 @@ const THEMES: Record<string, Theme> = {
 };
 
 const money = (value: number | null | undefined, suffix = "") => value === null || value === undefined ? "—" : `${Math.round(value * 10) / 10}${suffix}`;
-const hourLabel = (time: string) => new Date(time).toLocaleTimeString([], { hour: "numeric" });
-const dayLabel = (time: string) => new Date(`${time}T12:00:00`).toLocaleDateString([], { weekday: "short" });
+const hourLabel = (time: string) => new Date(time).toLocaleTimeString(undefined, { hour: "numeric" });
+const dayLabel = (time: string) => new Date(/T/.test(time) ? time : `${time}T12:00:00Z`).toLocaleDateString(undefined, { weekday: "short" });
 const arrowStyle = (degrees: number | null | undefined) => degrees === null || degrees === undefined ? undefined : { transform: `rotate(${degrees}deg)` };
+const browserClock = () => new Date().toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 
 function applyTheme(theme: Theme) {
   const root = document.documentElement;
@@ -56,8 +57,10 @@ export default function Home() {
   const [themeDraft, setThemeDraft] = useState(DEFAULT_THEME);
   const [clock, setClock] = useState("");
   const [unit, setUnit] = useState<"C" | "F">("C");
+  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
+    setMounted(true);
     try {
       const savedLocation = JSON.parse(localStorage.getItem("waterwind.location.v1") ?? "null") as Location | null;
       const savedTheme = JSON.parse(localStorage.getItem("waterwind.theme.v1") ?? "null") as Theme | null;
@@ -66,9 +69,9 @@ export default function Home() {
       if (savedTheme) { setTheme(savedTheme); setThemeDraft(savedTheme); applyTheme(savedTheme); }
       if (savedUnit === "C" || savedUnit === "F") setUnit(savedUnit);
     } catch { /* Invalid local preferences fall back to defaults. */ }
-    const updateClock = () => setClock(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+    const updateClock = () => setClock(browserClock());
     updateClock();
-    const timer = window.setInterval(updateClock, 30_000);
+    const timer = window.setInterval(updateClock, 15_000);
     return () => window.clearInterval(timer);
   }, []);
 
@@ -137,7 +140,7 @@ export default function Home() {
           <div>
             <div className="eyebrow">WATERWIND / LIVE MARINE BOARD</div>
             <h1>{location.name}</h1>
-            <div className="location-name">{clock} local · {location.lat.toFixed(4)}°, {location.lon.toFixed(4)}°</div>
+            <div className="location-name">{mounted ? clock : "—"} · {location.lat.toFixed(4)}°, {location.lon.toFixed(4)}°</div>
           </div>
           <div className="controls">
             <button className="unit-toggle" aria-label={`Switch to degrees ${unit === "C" ? "Fahrenheit" : "Celsius"}`} aria-pressed={unit === "F"} onClick={toggleUnit}><span className={unit === "C" ? "active" : ""}>°C</span><span className={unit === "F" ? "active" : ""}>°F</span></button>
@@ -172,8 +175,8 @@ export default function Home() {
           <div className="hours">
             {(brief?.nextHours ?? []).map((hour) => <article className="hour" key={hour.time}>
               <div className="hour-time">{hourLabel(hour.time)}</div>
-              <div className="hour-temp"><span className="direction-arrow" style={arrowStyle(hour.direction)}>↑</span> {money(hour.gust)}<small>GUST</small></div>
-              <div className="hour-sky">{hour.condition} · {formatTemp(hour.temperature)}</div>
+              <div className="hour-temp"><span className="direction-arrow" style={arrowStyle(hour.direction)}>↑</span> {formatTemp(hour.temperature)}<small>AIR · GUST {formatWind(hour.gust)}</small></div>
+              <div className="hour-sky">{hour.condition}</div>
               <div className="hour-meta"><span>WIND {formatWind(hour.wind)} {hour.compass}</span><span>RAIN {money(hour.rain, "%")}</span><span>WAVE {formatWave(hour.wave)} / {money(hour.period, " s")}</span><span className={`alignment ${hour.alignment}`}>{hour.alignment}</span></div>
             </article>)}
           </div>

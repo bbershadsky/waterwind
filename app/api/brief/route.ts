@@ -55,7 +55,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Invalid coordinates" }, { status: 400 });
   }
 
-  const timezone = "auto";
+  const timezone = "UTC";
   const nearAbino = distanceKm(lat, lon) <= DISTANCE_LIMIT_KM;
   const errors: string[] = [];
   const forecastUrl = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,cloud_cover,wind_speed_10m,wind_direction_10m,wind_gusts_10m&hourly=temperature_2m,precipitation_probability,precipitation,wind_speed_10m,wind_gusts_10m,wind_direction_10m,weather_code&daily=sunrise,sunset,precipitation_sum,wind_speed_10m_max,wind_gusts_10m_max&forecast_days=5&timezone=${timezone}&wind_speed_unit=kmh`;
@@ -73,13 +73,20 @@ export async function GET(request: NextRequest) {
   if (!marine) errors.push("Marine forecast unavailable");
   if (!alertDoc) errors.push("Weather alerts unavailable");
 
+  const toUtcMs = (value: string) => {
+    if (!value) return Number.NaN;
+    if (/Z$|[+-]\d{2}:\d{2}$/.test(value)) return Date.parse(value);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return Date.parse(`${value}T00:00:00Z`);
+    return Date.parse(value.includes("T") ? `${value}Z` : `${value}:00Z`);
+  };
+
   const now = wx?.current;
   const current = now ? { time: now.time, temperature: now.temperature_2m, feels: now.apparent_temperature, humidity: now.relative_humidity_2m, precipitation: now.precipitation, cloud: now.cloud_cover, code: now.weather_code, condition: sky(now.weather_code), wind: now.wind_speed_10m, direction: now.wind_direction_10m, compass: compass(now.wind_direction_10m), gust: now.wind_gusts_10m } : null;
   const marineCurrent = marine?.current ? { height: marine.current.wave_height, direction: marine.current.wave_direction, compass: compass(marine.current.wave_direction), period: marine.current.wave_period, windWave: marine.current.wind_wave_height, waterTemperature: marine.current.sea_surface_temperature, alignment: directionRelationship(now?.wind_direction_10m ?? null, marine.current.wave_direction) } : null;
   const nextHours = (wx?.hourly?.time ?? []).map((time: string, index: number) => {
     const marineIndex = marine?.hourly?.time?.indexOf(time) ?? -1;
-    return { time, temperature: wx.hourly.temperature_2m[index], rain: wx.hourly.precipitation_probability[index], precipitation: wx.hourly.precipitation[index], wind: wx.hourly.wind_speed_10m[index], gust: wx.hourly.wind_gusts_10m[index], direction: wx.hourly.wind_direction_10m[index], compass: compass(wx.hourly.wind_direction_10m[index]), code: wx.hourly.weather_code[index], condition: sky(wx.hourly.weather_code[index]), wave: marineIndex >= 0 ? marine.hourly.wave_height[marineIndex] : null, period: marineIndex >= 0 ? marine.hourly.wave_period[marineIndex] : null, waveDirection: marineIndex >= 0 ? marine.hourly.wave_direction[marineIndex] : null, alignment: marineIndex >= 0 ? directionRelationship(wx.hourly.wind_direction_10m[index], marine.hourly.wave_direction[marineIndex]) : "alignment unavailable" };
-  }).filter((hour: { time: string }) => new Date(hour.time).getTime() >= Date.now() - 30 * 60_000).slice(0, 12);
+    return { time: time.includes("T") && !/Z$|[+-]\d{2}:\d{2}$/.test(time) ? `${time}Z` : time, temperature: wx.hourly.temperature_2m[index], rain: wx.hourly.precipitation_probability[index], precipitation: wx.hourly.precipitation[index], wind: wx.hourly.wind_speed_10m[index], gust: wx.hourly.wind_gusts_10m[index], direction: wx.hourly.wind_direction_10m[index], compass: compass(wx.hourly.wind_direction_10m[index]), code: wx.hourly.weather_code[index], condition: sky(wx.hourly.weather_code[index]), wave: marineIndex >= 0 ? marine.hourly.wave_height[marineIndex] : null, period: marineIndex >= 0 ? marine.hourly.wave_period[marineIndex] : null, waveDirection: marineIndex >= 0 ? marine.hourly.wave_direction[marineIndex] : null, alignment: marineIndex >= 0 ? directionRelationship(wx.hourly.wind_direction_10m[index], marine.hourly.wave_direction[marineIndex]) : "alignment unavailable" };
+  }).filter((hour: { time: string }) => toUtcMs(hour.time) >= Date.now() - 30 * 60_000).slice(0, 12);
   const alerts = (alertDoc?.features ?? []).map((feature: { properties?: Record<string, unknown> }) => feature.properties ?? {}).map((item: Record<string, unknown>) => ({ headline: String(item.headline ?? item.name ?? "Weather alert"), severity: String(item.severity ?? "alert") }));
   const rawWind = Math.max(current?.wind ?? 0, current?.gust ?? 0);
   const rawWave = marineCurrent?.height ?? Math.max(...nextHours.map((hour: { wave: number | null }) => hour.wave ?? 0), 0);
